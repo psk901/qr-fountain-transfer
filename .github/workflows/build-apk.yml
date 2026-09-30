@@ -1,0 +1,135 @@
+name: Build APK from ZIP
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find uploaded ZIP
+        id: zip
+        run: |
+          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "No ZIP file found."
+            exit 1
+          fi
+
+          echo "ZIP found: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Extract ZIP
+        run: |
+          rm -rf extracted
+          mkdir extracted
+          unzip -o "${{ steps.zip.outputs.zip }}" -d extracted
+
+      - name: Locate PWA
+        run: |
+          INDEX=$(find extracted -type f -name "index.html" | head -n 1)
+
+          if [ -z "$INDEX" ]; then
+            echo "index.html not found inside ZIP"
+            exit 1
+          fi
+
+          PWA_DIR=$(dirname "$INDEX")
+          echo "PWA found at: $PWA_DIR"
+
+          mkdir -p site
+          cp -r "$PWA_DIR"/. site/
+
+      - name: Show PWA files
+        run: |
+          echo "===== PWA ====="
+          find site -maxdepth 2 -type f
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Bubblewrap
+        run: |
+          npm install -g @bubblewrap/cli
+
+      - name: Check manifest
+        run: |
+          test -f site/manifest.webmanifest || \
+          test -f site/manifest.json
+
+          echo "Manifest found"
+
+      - name: Start local web server
+        run: |
+          cd site
+          nohup python3 -m http.server 8080 > /tmp/server.log 2>&1 &
+
+      - name: Prepare Android project
+        run: |
+          mkdir -p android
+          cd android
+
+          bubblewrap init \
+            --manifest http://localhost:8080/manifest.webmanifest \
+            --directory .
+
+      - name: Build Android APK
+        working-directory: android
+        run: |
+          yes "" | bubblewrap build
+
+      - name: Find APK
+        run: |
+          find android -type f \( \
+            -name "*.apk" -o \
+            -name "*.aab" \
+          \) -print
+
+      - name: Upload APK and AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: qr-fountain-transfer-android
+          path: |
+            android/**/*.apk
+            android/**/*.aab
+          if-no-files-found: error
+
+      - name: Prepare GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
